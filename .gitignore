@@ -1,5 +1,5 @@
 *.bin
 .ipynb_checkpoints/
 nlp_env/
-*.dylib  
+*.dylib
 *.so
