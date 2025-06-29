@@ -11,6 +11,7 @@ from seqeval.scheme import BILOU
 from seqeval.metrics import classification_report, f1_score
 import gradio as gr
 from collections import Counter
+import fasttext
 
 # Configure TensorFlow for M1 MPS
 physical_devices = tf.config.list_physical_devices('GPU')
@@ -63,6 +64,24 @@ def build_vocab(sentences, labels):
     return word2idx, tag2idx
 
 word2idx, tag2idx = build_vocab(sentences, labels)
+
+def check_vocab_coverage(word2idx, sentences, test_words=None):
+    # Count words in dataset not in vocabulary
+    all_words = [word for sent in sentences for word in sent]
+    oov_words = [word for word in all_words if word not in word2idx]
+    print(f"Out-of-vocabulary (OOV) words in dataset: {len(set(oov_words))} ({len(oov_words)/len(all_words)*100:.2f}% of total)")
+    
+    # Check specific test words
+    if test_words:
+        missing_words = [word for word in test_words if word not in word2idx]
+        print(f"Test words missing from vocabulary: {missing_words}")
+
+# Test key words from your example sentences
+test_words = ["bensin", "hemat", "banget", "mesin", "fortuner", "cepat", "panas", 
+              "pelayanan", "yamaha", "kurang", "ramah", "bmw", "boros"]
+print("Checking vocabulary coverage...")
+check_vocab_coverage(word2idx, sentences, test_words)
+
 idx2tag = {idx: tag for tag, idx in tag2idx.items()}
 
 # Load pre-trained model
@@ -70,16 +89,20 @@ model = load_model("best_bilstm_model.h5")
 model.summary()
 
 # Prediction
+
+# Load FastText model (replace with your model path)
+ft_model = fasttext.load_model("path_to_fasttext_model.bin")
+
 def preprocess_text(text):
     words = text.split()
-    x = [[word2idx.get(word, word2idx["<UNK>"]) for word in words]]
-    x = tf.keras.preprocessing.sequence.pad_sequences(x, maxlen=128, padding='post', dtype='int32')  # Integer indices
-    
-    # Tambahkan dimensi embedding (50) dengan nilai dummy (akan diganti dengan embedding asli)
-    x = tf.cast(x, tf.float32)  # Konversi ke float32
-    x = tf.expand_dims(x, axis=-1)  # Tambah dimensi sementara
-    x = tf.tile(x, [1, 1, 50])  # Ulangi untuk 50 dimensi dengan nilai sementara
-    return x
+    # Get FastText embeddings for each word
+    embeddings = [ft_model.get_word_vector(word) for word in words]
+    # Pad/truncate to max length (128)
+    embeddings = tf.keras.preprocessing.sequence.pad_sequences(
+        [embeddings], maxlen=128, padding='post', dtype='float32'
+    )[0]
+    # Reshape to (1, 128, embedding_dim)
+    return tf.expand_dims(embeddings, axis=0)
 
 def predict_ner(text):
     x = preprocess_text(text)
@@ -87,22 +110,21 @@ def predict_ner(text):
     y_pred = np.argmax(y_pred, axis=-1)
     y_pred = [[idx2tag[idx] for idx in seq if idx != 0] for seq in y_pred]
     
-    # Agregasi label
-    labels = y_pred[0]  # Ambil label untuk kalimat pertama
+    # Aggregate labels
+    labels = y_pred[0]
     label_counts = {}
     for label in labels:
-        category = label.split('_')[0]  # Ambil kategori (e.g., FUEL, SERVICE)
+        category = label.split('_')[0]
         if category in ['FUEL', 'MACHINE', 'OTHERS', 'PART', 'PRICE', 'SERVICE']:
             label_counts[label] = label_counts.get(label, 0) + 1
     
-    # Prioritaskan berdasarkan kategori yang ada
     priority_categories = ['FUEL', 'MACHINE', 'OTHERS', 'PART', 'PRICE', 'SERVICE']
     for category in priority_categories:
         for polar in ['POSITIVE', 'NEGATIVE']:
             if f"{category}_{polar}" in label_counts:
-                return f"Predicted label for sentence: {category}_{polar}"
+                return {"label": f"{category}_{polar}", "sentence": text}
     
-    return "No dominant label found"
+    return {"label": "No dominant label found", "sentence": text}
 
 # Training Visualization
 def plot_training_history():
